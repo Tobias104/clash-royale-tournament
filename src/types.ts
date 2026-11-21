@@ -1,16 +1,22 @@
-export interface Team {
-  id: string;
-  seed: number | null;
-  p1_name: string;
-  p1_tag: string;
-  p2_name: string | null;
-  p2_tag: string | null;
-}
+export type Role = 'owner' | 'admin' | 'organizer' | 'moderator';
 export interface Tournament {
-  id: number;
+  id: string;
   name: string;
-  best_of: number;
-  started_at: string | null;
+  size: 8 | 16;
+  status: 'draft' | 'live' | 'finished';
+  sync_enabled: boolean;
+  bo_overrides: Record<string, unknown>;
+  start_at: string | null;
+  finished_at: string | null;
+  champion_id: string | null;
+  runner_up_id: string | null;
+  created_at: string;
 }
-export const teamName = (t?: Team | null): string =>
-  t ? [t.p1_name, t.p2_name].filter(Boolean).join(' - ') : '';
+export interface Participant {
+  id: string;
+  tournament_id: string;
+  slot: number;
+  display_name: string;
+  player_tag: string;
+  clan_name: string | null;
+}

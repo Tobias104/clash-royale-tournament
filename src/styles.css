@@ -94,7 +94,7 @@ button { background: var(--line); color: #02122e; border: 0; border-radius: 8px;
 button.ghost { background: transparent; color: #fff; border: 1px solid #3a4a9a; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .between { justify-content: space-between; }
-.team { display: grid; grid-template-columns: 24px 1fr 1fr; gap: 6px; margin-bottom: 6px; align-items: center; }
+.team { display: grid; gap: 6px; margin-bottom: 6px; align-items: center; }
 ul { padding-left: 18px; }
 
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -112,3 +112,15 @@ ul { padding-left: 18px; }
   .lines .lit { stroke-dashoffset: 0; }
   .pill.champ.real::after { animation: none; }
 }
+
+/* ---------- Nuevas piezas ---------- */
+.reset { position: absolute; border: 0; border-radius: 8px; background: linear-gradient(90deg, #ffe9a6, #f6c862); color: var(--ink); font-size: 10px; font-weight: 700; cursor: pointer; animation: pop .5s var(--ease) backwards; }
+.reset:hover { filter: brightness(1.06); }
+.plain { list-style: none; padding: 0; }
+.plain li { margin-bottom: 8px; }
+.tblwrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.tbl th, .tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #14206b; white-space: nowrap; }
+.team { grid-template-columns: 24px 1fr 1fr 1fr; }
+input:disabled { opacity: .5; }
+@media (max-width: 700px) { .team { grid-template-columns: 24px 1fr 1fr; } }

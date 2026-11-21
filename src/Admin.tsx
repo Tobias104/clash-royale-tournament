@@ -2,12 +2,18 @@ import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { sb } from './supabase';
 import type { AdminState } from './hooks';
-import type { Team, Tournament } from './types';
+import type { Participant, Role, Tournament } from './types';
 
 const TAG = /^#?[0-9A-Za-z]{3,15}$/;
 const norm = (t: string) => '#' + t.trim().toUpperCase().replace(/^#/, '');
-interface Row { p1_name: string; p1_tag: string; p2_name: string; p2_tag: string }
-const blankRow = (): Row => ({ p1_name: '', p1_tag: '', p2_name: '', p2_tag: '' });
+interface Row { name: string; tag: string; clan: string }
+const blankRow = (): Row => ({ name: '', tag: '', clan: '' });
+const ROLES: { v: Role; t: string }[] = [
+  { v: 'admin', t: 'Administrador' },
+  { v: 'organizer', t: 'Organizador' },
+  { v: 'moderator', t: 'Moderador' },
+];
+const roleName = (r: string) => (r === 'owner' ? 'Dueño' : ROLES.find((x) => x.v === r)?.t ?? r);
 
 function Login() {
   const [email, setEmail] = useState('');
@@ -25,7 +31,7 @@ function Login() {
 
   return (
     <form className="card" onSubmit={(e) => void go('in', e)}>
-      <h2>Ingresar como administrador</h2>
+      <h2>Ingresar</h2>
       <label>Correo <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
       <label>Contraseña <input type="password" required minLength={6} value={pw} onChange={(e) => setPw(e.target.value)} /></label>
       <div className="row">
@@ -40,154 +46,234 @@ function Login() {
 interface Props {
   auth: AdminState;
   t: Tournament | null;
-  teams: Team[];
+  participants: Participant[];
   reload: () => Promise<void>;
 }
 
-export default function Admin({ auth, t, teams, reload }: Props) {
-  const [rows, setRows] = useState<Row[]>(() => Array.from({ length: 8 }, blankRow));
-  const [name, setName] = useState('');
-  const [bestOf, setBestOf] = useState(3);
-  const [admins, setAdmins] = useState<{ email: string; is_owner: boolean }[]>([]);
-  const [newAdmin, setNewAdmin] = useState('');
+export default function Admin({ auth, t, participants, reload }: Props) {
+  const size = t?.size ?? 8;
+  const [rows, setRows] = useState<Row[]>(() => Array.from({ length: size }, blankRow));
+  const [newName, setNewName] = useState('Torneo Clash Royale');
+  const [newSize, setNewSize] = useState<8 | 16>(8);
+  const [staff, setStaff] = useState<{ email: string; role: string }[]>([]);
+  const [newEmail, setNewEmail] = useState('');
+  const [newRole, setNewRole] = useState<Role>('admin');
+  const [log, setLog] = useState<{ id: number; at: string; actor: string; action: string; table_name: string; row_key: string | null }[]>([]);
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
-    setRows(Array.from({ length: 8 }, (_, i) => {
-      const x = teams.find((q) => q.seed === i + 1);
-      return x ? { p1_name: x.p1_name, p1_tag: x.p1_tag, p2_name: x.p2_name ?? '', p2_tag: x.p2_tag ?? '' } : blankRow();
+    setRows(Array.from({ length: size }, (_, i) => {
+      const p = participants.find((q) => q.slot === i);
+      return p ? { name: p.display_name, tag: p.player_tag, clan: p.clan_name ?? '' } : blankRow();
     }));
-  }, [teams]);
-  useEffect(() => {
-    if (t) { setName(t.name); setBestOf(t.best_of); }
-  }, [t]);
+  }, [participants, size, t?.id]);
 
-  async function loadAdmins() {
-    const { data } = await sb.from('admins').select('email,is_owner').order('email');
-    setAdmins((data ?? []) as { email: string; is_owner: boolean }[]);
+  async function loadStaff() {
+    const { data } = await sb.from('staff').select('email,role').order('email');
+    setStaff((data ?? []) as { email: string; role: string }[]);
+  }
+  async function loadLog() {
+    const { data } = await sb.from('audit_log').select('id,at,actor,action,table_name,row_key').order('id', { ascending: false }).limit(40);
+    setLog((data ?? []) as typeof log);
   }
   useEffect(() => {
-    if (auth.isAdmin) void loadAdmins();
-  }, [auth.isAdmin]);
+    if (auth.isStaff) { void loadStaff(); void loadLog(); }
+  }, [auth.isStaff]);
 
   if (!auth.ready) return <p className="page mut">Cargando…</p>;
   if (!auth.email) return <div className="page"><Login /></div>;
-  if (!auth.isAdmin) {
+  if (!auth.isStaff) {
     return (
       <div className="page card">
         <h2>Sin permisos</h2>
-        <p>La cuenta {auth.email} no es administradora. Pedile al dueño que te agregue.</p>
+        <p>La cuenta {auth.email} no integra el personal del torneo. Pedile al dueño que te agregue con ese correo.</p>
         <button onClick={() => void sb.auth.signOut()}>Salir</button>
       </div>
     );
   }
 
-  const setRow = (i: number, k: keyof Row, v: string) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const active = t && t.status !== 'finished' ? t : null;
+  const draft = active?.status === 'draft';
+  const live = active?.status === 'live';
+  const setRow = (i: number, k: keyof Row, v: string) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const fail = (m: string) => { setMsg(m); };
 
-  async function saveTeams() {
+  async function createTournament() {
+    const { error } = await sb.from('tournaments').insert({ name: newName.trim(), size: newSize });
+    if (error) return fail(error.code === '23505' ? 'Ya hay un torneo activo: finalizalo o borrá el borrador.' : error.message);
+    setMsg('Torneo creado. Cargá los jugadores.');
+    await reload(); await loadLog();
+  }
+
+  async function saveParticipants() {
+    if (!active) return;
     setMsg('');
-    for (let i = 0; i < 8; i++) {
+    const upserts: { tournament_id: string; slot: number; display_name: string; player_tag: string; clan_name: string | null }[] = [];
+    const seen = new Set<string>();
+    const empties: number[] = [];
+    for (let i = 0; i < size; i++) {
       const r = rows[i];
-      const empty = !r.p1_name.trim() && !r.p1_tag.trim();
-      if (empty) {
-        const { error } = await sb.from('teams').delete().eq('seed', i + 1);
-        if (error) return setMsg(error.message);
-        continue;
-      }
-      if (!r.p1_name.trim() || !TAG.test(r.p1_tag.trim())) return setMsg(`Jugador ${i + 1}: falta el nombre o el tag no es válido.`);
-      const { error } = await sb.from('teams').upsert(
-        { seed: i + 1, p1_name: r.p1_name.trim(), p1_tag: norm(r.p1_tag), p2_name: null, p2_tag: null },
-        { onConflict: 'seed' },
-      );
-      if (error) return setMsg(error.message);
+      if (!r.name.trim() && !r.tag.trim()) { empties.push(i); continue; }
+      if (!r.name.trim() || !TAG.test(r.tag.trim())) return fail(`Jugador ${i + 1}: falta el nombre o el Player Tag no es válido.`);
+      const tag = norm(r.tag);
+      if (seen.has(tag)) return fail(`El Player Tag ${tag} está repetido.`);
+      seen.add(tag);
+      upserts.push({ tournament_id: active.id, slot: i, display_name: r.name.trim(), player_tag: tag, clan_name: r.clan.trim() || null });
     }
-    await reload();
-    setMsg('Jugadores guardados.');
+    if (draft) {
+      for (const i of empties) {
+        const { error } = await sb.from('participants').delete().eq('tournament_id', active.id).eq('slot', i);
+        if (error) return fail(error.message);
+      }
+    } else if (empties.some((i) => participants.some((p) => p.slot === i))) {
+      return fail('Con el torneo iniciado no se pueden quitar participantes.');
+    }
+    const toSave = live ? upserts.filter((u) => participants.some((p) => p.slot === u.slot)) : upserts;
+    if (toSave.length) {
+      const { error } = await sb.from('participants').upsert(toSave, { onConflict: 'tournament_id,slot' });
+      if (error) return fail(error.code === '23505' ? 'Hay un Player Tag repetido en este torneo.' : error.message);
+    }
+    setMsg('Participantes guardados.');
+    await reload(); await loadLog();
   }
 
-  async function updateTournament(patch: Partial<Tournament>, ok: string) {
-    const { error } = await sb.from('tournament').update(patch).eq('id', 1);
-    setMsg(error ? error.message : ok);
-    if (!error) await reload();
+  async function patchTournament(patch: Partial<Tournament>, ok: string) {
+    if (!active) return;
+    const { error } = await sb.from('tournaments').update(patch).eq('id', active.id);
+    if (error) return fail(error.message);
+    setMsg(ok);
+    await reload(); await loadLog();
   }
-
+  async function deleteDraft() {
+    if (!active || !window.confirm('¿Borrar este borrador y sus participantes?')) return;
+    const { error } = await sb.from('tournaments').delete().eq('id', active.id);
+    if (error) return fail(error.message);
+    setMsg('Borrador eliminado.');
+    await reload(); await loadLog();
+  }
   async function syncNow() {
     setMsg('Sincronizando…');
     const { data, error } = await sb.functions.invoke('sync');
     setMsg(error ? `Error: ${error.message}` : JSON.stringify(data));
+    await reload();
   }
 
-  async function addAdmin(e: FormEvent) {
+  async function addStaff(e: FormEvent) {
     e.preventDefault();
-    const { error } = await sb.from('admins').insert({ email: newAdmin.trim().toLowerCase(), is_owner: false });
-    setMsg(error ? error.message : 'Administrador agregado. Tiene que crear su cuenta con ese correo.');
-    if (!error) { setNewAdmin(''); await loadAdmins(); }
+    const { error } = await sb.from('staff').insert({ email: newEmail.trim().toLowerCase(), role: newRole });
+    if (error) return fail(error.message);
+    setMsg('Agregado. Tiene que crear su cuenta con ese correo.');
+    setNewEmail('');
+    await loadStaff(); await loadLog();
   }
-  async function removeAdmin(email: string) {
-    const { error } = await sb.from('admins').delete().eq('email', email);
-    setMsg(error ? error.message : 'Administrador quitado.');
-    if (!error) await loadAdmins();
+  async function changeRole(email: string, role: string) {
+    const { error } = await sb.from('staff').update({ role }).eq('email', email);
+    if (error) return fail(error.message);
+    await loadStaff(); await loadLog();
+  }
+  async function removeStaff(email: string) {
+    const { error } = await sb.from('staff').delete().eq('email', email);
+    if (error) return fail(error.message);
+    await loadStaff(); await loadLog();
   }
 
   return (
     <div className="page">
       <div className="row between">
-        <h2>Panel de administración</h2>
-        <button className="ghost" onClick={() => void sb.auth.signOut()}>Salir ({auth.email})</button>
+        <h2>Panel del torneo</h2>
+        <button className="ghost" onClick={() => void sb.auth.signOut()}>Salir ({auth.email} · {roleName(auth.role ?? '')})</button>
       </div>
       {msg && <p className="note">{msg}</p>}
 
-      <section className="card">
-        <h3>Torneo</h3>
-        <label>Nombre <input value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label>Formato de cada partido
-          <select value={bestOf} onChange={(e) => setBestOf(Number(e.target.value))}>
-            <option value={1}>Una batalla</option>
-            <option value={3}>Al mejor de 3</option>
-            <option value={5}>Al mejor de 5</option>
-          </select>
-        </label>
-        <div className="row">
-          <button onClick={() => void updateTournament({ name: name.trim() || 'Torneo Clash Royale', best_of: bestOf }, 'Torneo actualizado.')}>Guardar</button>
-          {t?.started_at
-            ? <button className="ghost" onClick={() => void updateTournament({ started_at: null }, 'Detección automática pausada.')}>Pausar detección</button>
-            : <button onClick={() => void updateTournament({ started_at: new Date().toISOString() }, 'Torneo iniciado: se detectan batallas desde ahora.')}>Iniciar torneo</button>}
-          <button className="ghost" onClick={() => void syncNow()}>Sincronizar ahora</button>
-        </div>
-        <p className="mut">{t?.started_at ? `Iniciado el ${new Date(t.started_at).toLocaleString()}. Solo cuentan batallas posteriores.` : 'Sin iniciar: la API no registra resultados.'}</p>
-      </section>
+      {!active && auth.canOrganize && (
+        <section className="card">
+          <h3>Nuevo torneo</h3>
+          {t?.status === 'finished' && <p className="mut">El último torneo ({t.name}) terminó y queda guardado en el historial.</p>}
+          <label>Nombre <input value={newName} onChange={(e) => setNewName(e.target.value)} /></label>
+          <label>Cantidad de jugadores
+            <select value={newSize} onChange={(e) => setNewSize(Number(e.target.value) === 16 ? 16 : 8)}>
+              <option value={8}>8 jugadores</option>
+              <option value={16}>16 jugadores</option>
+            </select>
+          </label>
+          <button onClick={() => void createTournament()}>Crear torneo</button>
+        </section>
+      )}
 
-      <section className="card">
-        <h3>Jugadores (en orden de llaves)</h3>
-        <p className="mut">Los puestos 1 y 2 juegan la llave A, 3 y 4 la B, 5 y 6 la C, 7 y 8 la D. Dejá una fila vacía para un pase libre.</p>
-        {rows.map((r, i) => (
-          <div className="team" key={i}>
-            <b>{i + 1}</b>
-            <input placeholder="Nombre" value={r.p1_name} onChange={(e) => setRow(i, 'p1_name', e.target.value)} />
-            <input placeholder="#TAG" value={r.p1_tag} onChange={(e) => setRow(i, 'p1_tag', e.target.value)} />
+      {active && (
+        <section className="card">
+          <h3>{active.name} · {draft ? 'Borrador' : 'En curso'} · {active.size} jugadores</h3>
+          {draft && <p className="mut">Cargá los jugadores en orden: el lugar 1 juega contra el 2 (llave A), el 3 contra el 4, y así. Dejá una fila vacía para un pase libre.</p>}
+          {live && <p className="mut">Torneo iniciado. Solo se pueden corregir nombre, tag y clan de los participantes (requiere ser administrador).</p>}
+          {rows.map((r, i) => {
+            const locked = live && !participants.some((p) => p.slot === i);
+            return (
+              <div className="team" key={i}>
+                <b>{i + 1}</b>
+                <input placeholder="Nombre visible" value={r.name} disabled={locked} onChange={(e) => setRow(i, 'name', e.target.value)} />
+                <input placeholder="#TAG" value={r.tag} disabled={locked} onChange={(e) => setRow(i, 'tag', e.target.value)} />
+                <input placeholder="Clan (opcional)" value={r.clan} disabled={locked} onChange={(e) => setRow(i, 'clan', e.target.value)} />
+              </div>
+            );
+          })}
+          <div className="row">
+            {(draft ? auth.canOrganize : auth.canAdmin) && <button onClick={() => void saveParticipants()}>Guardar participantes</button>}
+            {draft && auth.canOrganize && <button onClick={() => void patchTournament({ status: 'live' }, 'Torneo iniciado: se detectan batallas desde ahora.')}>Iniciar torneo</button>}
+            {draft && auth.canOrganize && <button className="ghost" onClick={() => void deleteDraft()}>Borrar borrador</button>}
+            {live && auth.canOrganize && (
+              <button className="ghost" onClick={() => void patchTournament({ sync_enabled: !active.sync_enabled }, active.sync_enabled ? 'Detección automática pausada.' : 'Detección automática activada.')}>
+                {active.sync_enabled ? 'Pausar detección' : 'Reanudar detección'}
+              </button>
+            )}
+            {live && auth.canOrganize && <button className="ghost" onClick={() => void syncNow()}>Sincronizar ahora</button>}
           </div>
-        ))}
-        <button onClick={() => void saveTeams()}>Guardar equipos</button>
-        <p className="mut">Los resultados manuales se cargan haciendo clic en cualquier llave del bracket.</p>
-      </section>
+          {live && <p className="mut">Los resultados se cargan o se corrigen con un clic en el enfrentamiento del bracket.</p>}
+        </section>
+      )}
 
       {auth.isOwner && (
         <section className="card">
-          <h3>Administradores</h3>
-          <ul>
-            {admins.map((a) => (
-              <li key={a.email}>
-                {a.email} {a.is_owner ? '(dueño)' : <button className="ghost" onClick={() => void removeAdmin(a.email)}>Quitar</button>}
+          <h3>Personal y roles</h3>
+          <ul className="plain">
+            {staff.map((s) => (
+              <li key={s.email} className="row">
+                <span>{s.email}</span>
+                {s.role === 'owner' ? <em>Dueño</em> : (
+                  <>
+                    <select value={s.role} onChange={(e) => void changeRole(s.email, e.target.value)}>
+                      {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+                    </select>
+                    <button className="ghost" onClick={() => void removeStaff(s.email)}>Quitar</button>
+                  </>
+                )}
               </li>
             ))}
           </ul>
-          <form className="row" onSubmit={(e) => void addAdmin(e)}>
-            <input type="email" required placeholder="correo@ejemplo.com" value={newAdmin} onChange={(e) => setNewAdmin(e.target.value)} />
-            <button type="submit">Agregar administrador</button>
+          <form className="row" onSubmit={(e) => void addStaff(e)}>
+            <input type="email" required placeholder="correo@ejemplo.com" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+            <select value={newRole} onChange={(e) => setNewRole(e.target.value as Role)}>
+              {ROLES.map((r) => <option key={r.v} value={r.v}>{r.t}</option>)}
+            </select>
+            <button type="submit">Agregar</button>
           </form>
         </section>
       )}
+
+      <section className="card">
+        <h3>Registro de cambios</h3>
+        <div className="tblwrap">
+          <table className="tbl">
+            <thead><tr><th>Fecha</th><th>Quién</th><th>Acción</th><th>Tabla</th><th>Clave</th></tr></thead>
+            <tbody>
+              {log.map((l) => (
+                <tr key={l.id}>
+                  <td>{new Date(l.at).toLocaleString()}</td><td>{l.actor}</td><td>{l.action}</td><td>{l.table_name}</td><td>{l.row_key ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }

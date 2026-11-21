@@ -1,28 +1,31 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { sb } from './supabase';
-import type { Team, Tournament } from './types';
+import type { Participant, Role, Tournament } from './types';
 import type { Result } from './lib';
 
+export type ResultRow = Result & { decided_at: string; source: string };
+
+/** Carga el torneo más reciente (en curso, borrador o el último finalizado) y se actualiza en tiempo real. */
 export function useData() {
   const [t, setT] = useState<Tournament | null>(null);
-  const [teams, setTeams] = useState<Team[]>([]);
-  const [results, setResults] = useState<Result[]>([]);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [results, setResults] = useState<ResultRow[]>([]);
   const [err, setErr] = useState('');
 
   const load = useCallback(async () => {
-    const [a, b, c] = await Promise.all([
-      sb.from('tournament').select('*').eq('id', 1).single(),
-      sb.from('teams').select('*'),
-      sb.from('results').select('*'),
+    const a = await sb.from('tournaments').select('*').order('created_at', { ascending: false }).limit(1);
+    if (a.error) { setErr(a.error.message); return; }
+    const cur = ((a.data ?? [])[0] ?? null) as Tournament | null;
+    if (!cur) { setT(null); setParticipants([]); setResults([]); setErr(''); return; }
+    const [b, c] = await Promise.all([
+      sb.from('participants').select('*').eq('tournament_id', cur.id),
+      sb.from('match_results').select('*').eq('tournament_id', cur.id),
     ]);
-    if (a.error || b.error || c.error) {
-      setErr((a.error ?? b.error ?? c.error)!.message);
-      return;
-    }
-    setT(a.data as Tournament);
-    setTeams(b.data as Team[]);
-    setResults(c.data as Result[]);
+    if (b.error || c.error) { setErr((b.error ?? c.error)!.message); return; }
+    setT(cur);
+    setParticipants(b.data as Participant[]);
+    setResults(c.data as ResultRow[]);
     setErr('');
   }, []);
 
@@ -32,50 +35,46 @@ export function useData() {
       .channel('torneo')
       .on('postgres_changes', { event: '*', schema: 'public' }, () => void load())
       .subscribe();
-    return () => {
-      void sb.removeChannel(ch);
-    };
+    return () => { void sb.removeChannel(ch); };
   }, [load]);
 
-  return { t, teams, results, err, reload: load };
+  return { t, participants, results, err, reload: load };
 }
 
 export interface AdminState {
   ready: boolean;
   email: string | null;
-  isAdmin: boolean;
+  role: Role | null;
+  isStaff: boolean;
+  canOrganize: boolean; // crear torneos y cargar participantes
+  canAdmin: boolean; // cargar y corregir resultados
   isOwner: boolean;
 }
 
 export function useAdmin(): AdminState {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
-  const [flags, setFlags] = useState({ isAdmin: false, isOwner: false });
+  const [role, setRole] = useState<Role | null>(null);
 
   useEffect(() => {
-    void sb.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setReady(true);
-    });
+    void sb.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true); });
     const { data } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => data.subscription.unsubscribe();
   }, []);
 
   const email = session?.user.email?.toLowerCase() ?? null;
   useEffect(() => {
-    if (!email) {
-      setFlags({ isAdmin: false, isOwner: false });
-      return;
-    }
-    void sb
-      .from('admins')
-      .select('is_owner')
-      .eq('email', email)
-      .maybeSingle()
-      .then(({ data }) => setFlags({ isAdmin: !!data, isOwner: !!data?.is_owner }));
+    if (!email) { setRole(null); return; }
+    void sb.from('staff').select('role').eq('email', email).maybeSingle().then(({ data }) => setRole((data?.role as Role | undefined) ?? null));
   }, [email]);
 
-  return { ready, email, ...flags };
+  return {
+    ready, email, role,
+    isStaff: role !== null,
+    canOrganize: role === 'owner' || role === 'admin' || role === 'organizer',
+    canAdmin: role === 'owner' || role === 'admin',
+    isOwner: role === 'owner',
+  };
 }
 
 export function useHash(): string {
