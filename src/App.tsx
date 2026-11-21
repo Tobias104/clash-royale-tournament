@@ -3,9 +3,8 @@ import Admin from './Admin';
 import BracketView from './BracketView';
 import MatchModal from './MatchModal';
 import { useAdmin, useData, useHash } from './hooks';
-import { BYE, resolve } from './lib';
+import { resolve } from './lib';
 import type { Result } from './lib';
-import { teamName } from './types';
 import type { Team } from './types';
 
 export default function App() {
@@ -21,21 +20,29 @@ export default function App() {
     return resolve(seeds, byMatch);
   }, [teams, results]);
 
-  const champ = state.GF.winner && state.GF.winner !== BYE ? teamMap.get(state.GF.winner) : undefined;
   const onAdmin = hash === '#admin';
+  const title = t?.name ?? 'Torneo Clash Royale';
 
   return (
     <div className="app">
-      <header className="top">
-        <h1>{t?.name ?? 'Torneo Clash Royale'}</h1>
-        {champ && <span className="champ">Campeón: {teamName(champ)}</span>}
-        <a href={onAdmin ? '#' : '#admin'}>{onAdmin ? 'Ver bracket' : auth.isAdmin ? 'Panel' : 'Admin'}</a>
-      </header>
-      {err && <p className="note">No se pudo cargar el torneo: {err}</p>}
       {onAdmin ? (
-        <div className="scroll"><Admin auth={auth} t={t} teams={teams} reload={reload} /></div>
+        <>
+          <header className="top">
+            <h1>{title}</h1>
+            <a href="#">Ver bracket</a>
+          </header>
+          {err && <p className="note">No se pudo cargar el torneo: {err}</p>}
+          <div className="scroll"><Admin auth={auth} t={t} teams={teams} reload={reload} /></div>
+        </>
       ) : (
-        <BracketView state={state} teams={teamMap} onOpen={setOpen} />
+        <>
+          <BracketView state={state} teams={teamMap} onOpen={setOpen} />
+          <nav className="chip">
+            <span>{title}</span>
+            <a href="#admin">{auth.isAdmin ? 'Panel' : 'Admin'}</a>
+          </nav>
+          {err && <p className="note float">No se pudo cargar el torneo: {err}</p>}
+        </>
       )}
       {open && !onAdmin && (
         <MatchModal key={open} m={state[open]} teams={teamMap} isAdmin={auth.isAdmin} onClose={() => setOpen(null)} reload={reload} />
